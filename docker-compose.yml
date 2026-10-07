@@ -1,0 +1,66 @@
+# Full local environment: PostgreSQL + LocalStack (SQS) + migrations + 3 application instances.
+#   docker compose up --build            -> instances on :3001 :3002 :3003
+#   docker compose up --build --scale app=5 is NOT used: instances are explicit so ports are stable.
+x-app: &app
+  build: .
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+    localstack: { condition: service_healthy }
+  environment: &app-env
+    DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wagering
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    SQS_AUTO_CREATE: "true"
+    LOG_LEVEL: info
+    PORT: "3000"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: wagering }
+    ports: ["5432:5432"]
+    command: ["postgres", "-c", "max_connections=300"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wagering"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3
+    environment: { SERVICES: sqs, DEBUG: "0" }
+    ports: ["4566:4566"]
+    volumes: ["./localstack/init:/etc/localstack/init/ready.d:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs list-queues | grep -q wager-events"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build: .
+    command: ["bun", "run", "migrate"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wagering
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  app1:
+    <<: *app
+    environment: { <<: *app-env, INSTANCE_ID: app1 }
+    ports: ["3001:3000"]
+  app2:
+    <<: *app
+    environment: { <<: *app-env, INSTANCE_ID: app2 }
+    ports: ["3002:3000"]
+  app3:
+    <<: *app
+    environment: { <<: *app-env, INSTANCE_ID: app3 }
+    ports: ["3003:3000"]
+
+volumes:
+  pgdata:
